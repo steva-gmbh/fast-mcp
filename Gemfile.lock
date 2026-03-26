@@ -128,7 +128,7 @@ GEM
     tilt (2.6.1)
     unicode-display_width (3.1.4)
       unicode-emoji (~> 4.0, >= 4.0.4)
-    unicode-emoji (4.0.4)
+    unicode-emoji (4.2.0)
     zeitwerk (2.7.3)
 
 PLATFORMS

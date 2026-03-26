@@ -101,6 +101,42 @@ module FastMcp
         clients_to_remove.each { |client_id| unregister_sse_client(client_id) }
       end
 
+      # Send a JSON-RPC response only to the client that issued the current POST request.
+      # Falls back to broadcast when no client_id is set or the client is not found.
+      def send_json_rpc_response(message)
+        client_id = Thread.current[:fast_mcp_response_client_id]
+        unless client_id
+          send_message(message)
+          return
+        end
+
+        json_message = message.is_a?(String) ? message : JSON.generate(message)
+
+        client = @sse_clients[client_id]
+        unless client
+          @logger.warn("No SSE client for client_id=#{client_id}, broadcasting")
+          send_message(message)
+          return
+        end
+
+        stream = client[:stream]
+        mutex = client[:mutex]
+        return if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?) || mutex.nil?
+
+        begin
+          mutex.synchronize do
+            stream.write("data: #{json_message}\n\n")
+            stream.flush if stream.respond_to?(:flush)
+          end
+        rescue Errno::EPIPE, IOError => e
+          @logger.info("Client #{client_id} disconnected: #{e.message}")
+          unregister_sse_client(client_id)
+        rescue StandardError => e
+          @logger.error("Error sending to client #{client_id}: #{e.message}")
+          unregister_sse_client(client_id)
+        end
+      end
+
       # Register a new SSE client
       def register_sse_client(client_id, stream, mutex = nil)
         @sse_clients_mutex.synchronize do
@@ -412,12 +448,10 @@ module FastMcp
         # Send an initial comment to keep the connection alive
         mutex.synchronize { io.write(": SSE connection established\n\n") }
 
-        # Extract query parameters from the request
-        query_string = env['QUERY_STRING']
-
-        # Send endpoint information as the first message with query parameters
-        endpoint = "#{@path_prefix}/#{@messages_route}"
-        endpoint += "?#{query_string}" if query_string
+        # Build endpoint URL with client_id so POSTs can be routed back to this SSE stream
+        query_params = Rack::Utils.parse_query(env['QUERY_STRING'] || '')
+        query_params['client_id'] = client_id
+        endpoint = "#{@path_prefix}/#{@messages_route}?#{Rack::Utils.build_query(query_params)}"
         @logger.debug("Sending endpoint information to client #{client_id}: #{endpoint}")
         mutex.synchronize { io.write("event: endpoint\ndata: #{endpoint}\n\n") }
 
@@ -536,18 +570,19 @@ module FastMcp
       end
 
       def process_json_request_with_server(request, server)
-        # Parse the request body
         body = request.body.read
         @logger.debug("Request body: #{body}")
 
-        # Extract headers that might be relevant
         headers = request.env.select { |k, _v| k.start_with?('HTTP_') }
                          .transform_keys { |k| k.sub('HTTP_', '').downcase.tr('_', '-') }
 
-        # Let the specific server handle the JSON request directly
-        response = server.handle_request(body, headers: headers) || []
+        Thread.current[:fast_mcp_response_client_id] = request.GET['client_id']
+        begin
+          response = server.handle_request(body, headers: headers) || []
+        ensure
+          Thread.current[:fast_mcp_response_client_id] = nil
+        end
 
-        # Return the JSON response
         [200, { 'Content-Type' => 'application/json' }, response]
       end
 

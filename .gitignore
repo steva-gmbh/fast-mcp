@@ -4,3 +4,5 @@
 
 # Ignore gem files
 *.gem
+/.idea/
+/fast-mcp.iml

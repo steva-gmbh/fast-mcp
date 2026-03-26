@@ -215,17 +215,15 @@ module FastMcp
     PROTOCOL_VERSION = '2024-11-05'
 
     def handle_initialize(params, id)
-      # Store client capabilities for later use
       @client_capabilities = params['capabilities'] || {}
       client_info = params['clientInfo'] || {}
 
-      # Log client information
       @logger.info("Client connected: #{client_info['name']} v#{client_info['version']}")
-      # @logger.debug("Client capabilities: #{client_capabilities.inspect}")
 
-      # Prepare server response
+      version = @transport&.protocol_version || PROTOCOL_VERSION
+
       response = {
-        protocolVersion: PROTOCOL_VERSION, # For now, only version 2024-11-05 is supported.
+        protocolVersion: version,
         capabilities: @capabilities,
         serverInfo: {
           name: @name,
@@ -468,11 +466,11 @@ module FastMcp
       send_response(response)
     end
 
-    # Send a JSON-RPC response
+    # Send a JSON-RPC response (unicast to the requesting client when supported)
     def send_response(response)
       if @transport
         @logger.debug("Sending response: #{response.inspect}")
-        @transport.send_message(response)
+        @transport.send_json_rpc_response(response)
       else
         @logger.warn("No transport available to send response: #{response.inspect}")
         @logger.warn("Transport: #{@transport.inspect}, transport_klass: #{@transport_klass.inspect}")

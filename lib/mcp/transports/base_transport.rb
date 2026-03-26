@@ -30,6 +30,17 @@ module FastMcp
         raise NotImplementedError, "#{self.class} must implement #send_message"
       end
 
+      # Send a JSON-RPC response to a specific client (unicast).
+      # Subclasses may override; default delegates to broadcast.
+      def send_json_rpc_response(message)
+        send_message(message)
+      end
+
+      # Protocol version advertised during initialize handshake.
+      def protocol_version
+        '2024-11-05'
+      end
+
       # Process an incoming message
       # This is a helper method that can be used by subclasses
       def process_message(message, headers: {})

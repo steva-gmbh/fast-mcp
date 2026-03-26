@@ -121,7 +121,6 @@ module FastMcp
   # @yieldparam server [FastMcp::Server] The server to configure
   # @return [#call] The Rack middleware
   def self.mount_in_rails(app, options = {})
-    # Default options
     name = options.delete(:name) || app.class.module_parent_name.underscore.dasherize
     version = options.delete(:version) || '1.0.0'
     logger = options[:logger] || Rails.logger
@@ -129,6 +128,7 @@ module FastMcp
     messages_route = options.delete(:messages_route) || 'messages'
     sse_route = options.delete(:sse_route) || 'sse'
     authenticate = options.delete(:authenticate) || false
+    transport = options.delete(:transport)
     allowed_origins = options[:allowed_origins] || default_rails_allowed_origins(app)
     allowed_ips = options[:allowed_ips] || FastMcp::Transports::RackTransport::DEFAULT_ALLOWED_IPS
 
@@ -137,23 +137,30 @@ module FastMcp
     options[:logger] = logger
     options[:allowed_origins] = allowed_origins
 
-    # Create or get the server
     self.server = FastMcp::Server.new(name: name, version: version, logger: logger)
     yield self.server if block_given?
 
-    # Choose the right middleware based on authentication
-    self.server.transport_klass = if authenticate
-                                    FastMcp::Transports::AuthenticatedRackTransport
-                                  else
-                                    FastMcp::Transports::RackTransport
-                                  end
+    self.server.transport_klass = resolve_transport_klass(transport, authenticate)
 
-    # Insert the middleware in the Rails middleware stack
-    app.middleware.use(
-      self.server.transport_klass,
-      self.server,
-      options.merge(path_prefix: path_prefix, messages_route: messages_route, sse_route: sse_route)
-    )
+    middleware_options = options.merge(path_prefix: path_prefix)
+    unless self.server.transport_klass == FastMcp::Transports::StreamableHttpTransport
+      middleware_options.merge!(messages_route: messages_route, sse_route: sse_route)
+    end
+
+    app.middleware.use(self.server.transport_klass, self.server, middleware_options)
+  end
+
+  def self.resolve_transport_klass(transport, authenticate)
+    case transport
+    when :streamable_http
+      FastMcp::Transports::StreamableHttpTransport
+    when Class
+      transport
+    when :sse, nil
+      authenticate ? FastMcp::Transports::AuthenticatedRackTransport : FastMcp::Transports::RackTransport
+    else
+      raise ArgumentError, "Unknown transport: #{transport.inspect}. Use :streamable_http, :sse, or a Class."
+    end
   end
 
   def self.default_rails_allowed_origins(rail_app)

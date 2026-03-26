@@ -175,6 +175,80 @@ RSpec.describe FastMcp::Transports::RackTransport do
     end
   end
 
+  describe '#send_json_rpc_response' do
+    let(:client1_stream) { double('stream1') }
+    let(:client2_stream) { double('stream2') }
+    let(:json_msg) { '{"jsonrpc":"2.0","id":1,"result":{}}' }
+
+    before do
+      allow(client1_stream).to receive(:respond_to?).with(:closed?).and_return(true)
+      allow(client1_stream).to receive(:closed?).and_return(false)
+      allow(client1_stream).to receive(:respond_to?).with(:flush).and_return(true)
+      allow(client1_stream).to receive(:flush)
+      allow(client1_stream).to receive(:write)
+
+      allow(client2_stream).to receive(:respond_to?).with(:closed?).and_return(true)
+      allow(client2_stream).to receive(:closed?).and_return(false)
+      allow(client2_stream).to receive(:respond_to?).with(:flush).and_return(true)
+      allow(client2_stream).to receive(:flush)
+      allow(client2_stream).to receive(:write)
+
+      transport.instance_variable_set(:@sse_clients, {
+        'client-a' => { stream: client1_stream, mutex: Mutex.new },
+        'client-b' => { stream: client2_stream, mutex: Mutex.new }
+      })
+    end
+
+    it 'sends only to the targeted client when Thread-Local client_id is set' do
+      Thread.current[:fast_mcp_response_client_id] = 'client-a'
+      begin
+        transport.send_json_rpc_response({ jsonrpc: '2.0', id: 1, result: {} })
+      ensure
+        Thread.current[:fast_mcp_response_client_id] = nil
+      end
+
+      expect(client1_stream).to have_received(:write).once
+      expect(client2_stream).not_to have_received(:write)
+    end
+
+    it 'broadcasts to all clients when no Thread-Local client_id is set' do
+      transport.send_json_rpc_response({ jsonrpc: '2.0', id: 1, result: {} })
+
+      expect(client1_stream).to have_received(:write).once
+      expect(client2_stream).to have_received(:write).once
+    end
+
+    it 'falls back to broadcast when client_id is not found in sse_clients' do
+      Thread.current[:fast_mcp_response_client_id] = 'unknown-client'
+      begin
+        transport.send_json_rpc_response({ jsonrpc: '2.0', id: 1, result: {} })
+      ensure
+        Thread.current[:fast_mcp_response_client_id] = nil
+      end
+
+      expect(client1_stream).to have_received(:write).once
+      expect(client2_stream).to have_received(:write).once
+    end
+
+    it 'unregisters client on broken pipe' do
+      broken_stream = double('broken')
+      allow(broken_stream).to receive(:respond_to?).with(:closed?).and_return(true)
+      allow(broken_stream).to receive(:closed?).and_return(false)
+      allow(broken_stream).to receive(:write).and_raise(Errno::EPIPE, 'Broken pipe')
+
+      transport.register_sse_client('broken-client', broken_stream, Mutex.new)
+
+      Thread.current[:fast_mcp_response_client_id] = 'broken-client'
+      begin
+        transport.send_json_rpc_response({ jsonrpc: '2.0', id: 1, result: {} })
+      ensure
+        Thread.current[:fast_mcp_response_client_id] = nil
+      end
+
+      expect(transport.sse_clients).not_to have_key('broken-client')
+    end
+  end
+
   describe '#call' do
     it 'passes non-MCP requests to the app' do
       env = { 'PATH_INFO' => '/not-mcp' }
