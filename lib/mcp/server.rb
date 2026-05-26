@@ -448,7 +448,7 @@ module FastMcp
         result: result
       }
 
-      @logger.info("Sending result: #{response.inspect}")
+      @logger.debug("Sending result: #{response.inspect}")
       send_response(response)
     end
 
